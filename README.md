@@ -38,6 +38,7 @@ Esta demostración práctica de 15-20 minutos ilustra cómo Amazon EKS Auto Mode
 
 ## Recursos Adicionales
 
+- [Presentación de la demo en PDF](https://github.com/jpamies/aws-summit-automode-demo/blob/main/DEV308%20-%20EKS%20Auto%20Mode%20Demo.pdf)
 - [Retail Store App](https://github.com/aws-containers/retail-store-sample-app)
 - [2048 Demo Game](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/examples/2048/2048_full.yaml)
 - [Hands-On workshop EKS AutoMode](https://catalog.workshops.aws/eks-auto-mode/en-US)
