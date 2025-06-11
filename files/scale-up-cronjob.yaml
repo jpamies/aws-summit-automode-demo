@@ -1,0 +1,95 @@
+# =========================================================
+# SCALE BACK TO NORMAL - KUBERNETES RESOURCES
+# =========================================================
+# This manifest defines resources needed to automatically
+# scale deployments back to their original replica counts
+# at 14:30 UTC (16:30 CEST) every day.
+# =========================================================
+
+# Note: This manifest assumes the namespace, service account,
+# cluster role, and cluster role binding from scale-down-cronjob.yaml
+# are already applied.
+
+# =========================================================
+# CRON JOB
+# =========================================================
+# This CronJob runs every day at 14:30 UTC (16:30 CEST)
+# to scale deployments back to their original replica counts
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scale-up-deployments
+  namespace: scale-to-zero
+  labels:
+    app: scale-to-zero
+spec:
+  # Run at 14:30 UTC (16:30 CEST) every day
+  schedule: "30 14 * * *"
+  # Prevent concurrent executions of the job
+  concurrencyPolicy: Forbid
+  # Keep only 3 successful jobs in history
+  successfulJobsHistoryLimit: 3
+  # Keep only 1 failed job in history
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: scale-to-zero
+        spec:
+          # Use the ServiceAccount with appropriate permissions
+          serviceAccountName: scale-deployments-sa
+          containers:
+          - name: kubectl
+            # Use the bitnami/kubectl image which includes kubectl and jq
+            image: bitnami/kubectl:latest
+            # Set resource limits and requests
+            resources:
+              limits:
+                cpu: "200m"
+                memory: "256Mi"
+              requests:
+                cpu: "100m"
+                memory: "128Mi"
+            # Add security context
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              readOnlyRootFilesystem: true
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Get all deployments across all namespaces as JSON
+              # Parse with jq to extract namespace, deployment name, and annotations
+              # Then scale each deployment back to its original replica count
+              # Skip the scale-to-zero namespace
+              
+              kubectl get deployments --all-namespaces -o json | jq -r '.items[] | select(.metadata.namespace != "scale-to-zero") | "\(.metadata.namespace) \(.metadata.name) \(.spec.replicas)"' | while read namespace deployment current_replicas; do
+                # Skip if already has replicas
+                if [ "$current_replicas" -gt "0" ]; then
+                  echo "Deployment $deployment in namespace $namespace already has $current_replicas replicas, skipping"
+                  continue
+                fi
+                
+                # Check for the deployment's original replica count from annotations or labels
+                # If not found, default to 1 replica
+                original_replicas=$(kubectl get deployment -n $namespace $deployment -o jsonpath='{.metadata.annotations.original-replicas}' 2>/dev/null || echo "")
+                
+                if [ -z "$original_replicas" ]; then
+                  # Try to get from spec.replicas in the deployment template
+                  original_replicas=$(kubectl get deployment -n $namespace $deployment -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
+                  
+                  # If it's 0 (already scaled down), default to 1
+                  if [ "$original_replicas" = "0" ]; then
+                    original_replicas="1"
+                  fi
+                fi
+                
+                echo "Scaling up deployment $deployment in namespace $namespace to $original_replicas replicas"
+                kubectl scale deployment -n $namespace $deployment --replicas=$original_replicas
+              done
+          # Ensure the job doesn't restart if it completes successfully
+          restartPolicy: OnFailure

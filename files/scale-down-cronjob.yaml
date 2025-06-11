@@ -1,0 +1,139 @@
+# =========================================================
+# SCALE TO ZERO - KUBERNETES RESOURCES
+# =========================================================
+# This manifest defines resources needed to automatically
+# scale down all deployments to zero replicas at 17:00 UTC
+# (19:00 CEST) every day to save resources during non-working hours.
+# =========================================================
+
+# =========================================================
+# NAMESPACE
+# =========================================================
+# Dedicated namespace for the scale-to-zero utility
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: scale-to-zero
+  labels:
+    app: scale-to-zero
+    purpose: resource-optimization
+---
+# =========================================================
+# SERVICE ACCOUNT
+# =========================================================
+# This ServiceAccount provides an identity for the CronJob
+# to run with appropriate permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scale-deployments-sa
+  namespace: scale-to-zero
+  labels:
+    app: scale-to-zero
+---
+# =========================================================
+# CLUSTER ROLE
+# =========================================================
+# This ClusterRole defines the permissions needed to list
+# and modify deployments across all namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deployment-scaler
+  labels:
+    app: scale-to-zero
+rules:
+- apiGroups: ["apps"]
+  resources: 
+    - deployments     # Permission to access deployment resources
+    - deployments/scale  # Permission to scale deployments
+  verbs: 
+    - get      # Permission to get deployment details
+    - list     # Permission to list deployments
+    - watch    # Permission to watch for deployment changes
+    - update   # Permission to update deployments
+    - patch    # Permission to patch deployments
+---
+# =========================================================
+# CLUSTER ROLE BINDING
+# =========================================================
+# This ClusterRoleBinding connects the ServiceAccount to the
+# ClusterRole, granting the ServiceAccount the permissions
+# defined in the ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scale-deployments-rb
+  labels:
+    app: scale-to-zero
+subjects:
+- kind: ServiceAccount
+  name: scale-deployments-sa
+  namespace: scale-to-zero
+roleRef:
+  kind: ClusterRole
+  name: deployment-scaler
+  apiGroup: rbac.authorization.k8s.io
+---
+# =========================================================
+# CRON JOB
+# =========================================================
+# This CronJob runs every day at 17:00 UTC (19:00 CEST)
+# to scale down all deployments across all namespaces
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scale-down-deployments
+  namespace: scale-to-zero
+  labels:
+    app: scale-to-zero
+spec:
+  # Run at 17:00 UTC (19:00 CEST) every day
+  schedule: "0 17 * * *"
+  # Prevent concurrent executions of the job
+  concurrencyPolicy: Forbid
+  # Keep only 3 successful jobs in history
+  successfulJobsHistoryLimit: 3
+  # Keep only 1 failed job in history
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: scale-to-zero
+        spec:
+          # Use the ServiceAccount with appropriate permissions
+          serviceAccountName: scale-deployments-sa
+          containers:
+          - name: kubectl
+            # Use the bitnami/kubectl image which includes kubectl and jq
+            image: bitnami/kubectl:latest
+            # Set resource limits and requests
+            resources:
+              limits:
+                cpu: "200m"
+                memory: "256Mi"
+              requests:
+                cpu: "100m"
+                memory: "128Mi"
+            # Add security context
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              readOnlyRootFilesystem: true
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Get all deployments across all namespaces as JSON
+              # Parse with jq to extract namespace and deployment name
+              # Then scale each deployment to 0 replicas
+              # Skip the scale-to-zero namespace to avoid scaling down our own resources
+              kubectl get deployments --all-namespaces -o json | jq -r '.items[] | select(.metadata.namespace != "scale-to-zero") | "\(.metadata.namespace) \(.metadata.name)"' | while read namespace deployment; do
+                echo "Scaling down deployment $deployment in namespace $namespace"
+                kubectl scale deployment -n $namespace $deployment --replicas=0
+              done
+          # Ensure the job doesn't restart if it completes successfully
+          restartPolicy: OnFailure
